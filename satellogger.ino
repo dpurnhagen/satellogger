@@ -17,9 +17,9 @@
 
 #include <Wire.h>                          // wires
 #include <hd44780.h>                       // hd44780
-#include <hd44780ioClass/hd44780_I2Cexp.h> // i2c expander
-#include <TinyGPS++.h>
-#include <AltSoftSerial.h>                // serial port for gps
+#include <hd44780ioClass/hd44780_I2Cexp.h> // i2c backpack
+#include <TinyGPS++.h>                     // gps parser
+#include <NeoSWSerial.h>                   // serial port for gps
 
 // For serial monitor debugging.
 // Comment out the define to disable debugging.
@@ -30,7 +30,7 @@
 #define STATUS_LINE
 
 // GPS serial port.
-AltSoftSerial gpsPort; // GPS TX to pin 8, GPS RX to pin 9
+NeoSWSerial gpsPort(2, 3); // GPS TX to pin 8, GPS RX to pin 9
 
 // LCD display address and geometry.
 const int LCD_ADDRESS = 0x27;
