@@ -8,10 +8,13 @@
  * ------------------------------------------------------------------------------
  *
  * This sketch is for LCDs with PCF8574 or MCP23008 chip based backpacks.
+ * As the serial is configured, this sketch is for a Leonardo or Pro Micro board.
+ * Use NeoSWSerial for Uno boards.
  * 
  */
-#define BANNER "Satellogger :: K4ILG"
-#define VERSION "0.8.2"
+#define PROGRAM "Satellogger"
+#define CALLSIGN "K4ILG"
+#define VERSION "0.8.3"
 #define COPYRIGHT "(c) 2020 - Donald Purnhagen"
 #define INVALID "Searching...        "
 
@@ -19,7 +22,8 @@
 #include <hd44780.h>                       // hd44780
 #include <hd44780ioClass/hd44780_I2Cexp.h> // i2c backpack
 #include <TinyGPS++.h>                     // gps parser
-#include <NeoSWSerial.h>                   // serial port for gps
+// Use software serial on the Uno which lacks harware serial when using USB.
+//#include <NeoSWSerial.h>                 // serial port for gps
 
 // For serial monitor debugging.
 // Comment out the define to disable debugging.
@@ -30,34 +34,61 @@
 #define STATUS_LINE
 
 // GPS serial port.
-NeoSWSerial gpsPort(2, 3); // GPS TX to pin 8, GPS RX to pin 9
+//NeoSWSerial gpsPort(10, 9); // GPS TX to pin 8, GPS RX to pin 9
+#define GPS_PORT Serial1
 
 // LCD display address and geometry.
 const int LCD_ADDRESS = 0x27;
 const int LCD_COLS = 20;
 const int LCD_ROWS = 4;
 
+// Other pins.
+const int BUZZER_PIN = 9;
+
+// Configuration structure.
+typedef struct sl_config_s {
+     bool bStatus;
+     bool bUSB;
+     int iPipFreq;
+     int iPipLenShort;
+     int iPipLenLong;
+     byte iLogoPos;
+     char szHeaderL[LCD_COLS];
+     char szHeaderR[LCD_COLS];
+} sl_config_t;
+
 // My best attempt at a satellite logo.
 byte logo[] = {
     // Char 0
-    B00000, B01010, B01010, B01001, B00101, B00100, B00011, B00000,
+    B00000, B10010, B10010, B10010, B01001, B01000, B00110, B00001,
     // Char 1
-    B10100, B01110, B01100, B00010, B10000, B01100, B00000, B11100
+    B10010, B01101, B01110, B01110, B00001, B11000, B00000, B11000
 };
 
 // Global variables.
 TinyGPSPlus gps;
 hd44780_I2Cexp lcd(LCD_ADDRESS); // Declare lcd object at fixed i2c address.
+sl_config_t sl_config;
 
 void setup() {
-    int status;
+    int iStatus;
+
+    // Initialize the configuration.
+    sl_config.bStatus = true;
+    sl_config.bUSB = true;
+    sl_config.iPipFreq = 1000;
+    sl_config.iPipLenShort = 100;
+    sl_config.iPipLenLong = 500;
+    sl_config.iLogoPos = 12;
+    strcpy(sl_config.szHeaderL, PROGRAM);
+    strcpy(sl_config.szHeaderR, CALLSIGN);
     
     // Initialize LCD with number of columns and rows. 
-    status = lcd.begin(LCD_COLS, LCD_ROWS);
-    if (status) {
-        status = -status; // onvert status value to positive number.
+    iStatus = lcd.begin(LCD_COLS, LCD_ROWS);
+    if (0 != iStatus) {
+        iStatus = -iStatus; // onvert status value to positive number.
         // Failure: blink error code using the onboard LED if possible.
-        hd44780::fatalError(status); // Does not return.
+        hd44780::fatalError(iStatus); // Does not return.
     }
 
     // Initalization was successful, the backlight should be on now.
@@ -67,33 +98,50 @@ void setup() {
     // Create custom characters for logo.
     lcd.createChar(0, logo); 
     lcd.createChar(1, logo + 8); 
+    
     // Print banner to the LCD.
-    lcd.print(BANNER);
-    lcd.setCursor(12, 0);
-    lcd.write(0);
-    lcd.write(1);
+    lcd.print(sl_config.szHeaderL);
+    if (0 <= sl_config.iLogoPos) {
+        lcd.setCursor(sl_config.iLogoPos, 0);
+        lcd.write(0);
+        lcd.write(1);
+    }
+    if (NULL != sl_config.szHeaderR) {
+        size_t iLen = strlen(sl_config.szHeaderR);
+        if (0 < iLen) {
+            int iPos = LCD_COLS - iLen;
+            if (0 > iPos) {
+                iPos = 0;
+            }
+            lcd.setCursor(iPos, 0);
+            lcd.print(sl_config.szHeaderR);
+        }
+    }
 
     #if defined (DEBUG_PORT)
-    {
+    if (sl_config.bUSB) {
         DEBUG_PORT.begin(9600);
+        while (!DEBUG_PORT); // Wait for it...
         DEBUG_PORT.flush();
-        DEBUG_PORT.println(F(BANNER));
+        DEBUG_PORT.print(F(PROGRAM));
+        DEBUG_PORT.print(" ");
+        DEBUG_PORT.println(F(CALLSIGN));
         DEBUG_PORT.println(F(VERSION));
         DEBUG_PORT.println(F(COPYRIGHT));
-        DEBUG_PORT.print(F("TinyGPS++ version "));
-        DEBUG_PORT.println(TinyGPSPlus::libraryVersion());
+        //DEBUG_PORT.print(F("TinyGPS++ version "));
+        //DEBUG_PORT.println(TinyGPSPlus::libraryVersion());
     }
     #endif // DEBUG_PORT
 
-    gpsPort.begin(9600);
+    GPS_PORT.begin(9600);
     delay(1000);
 }
 
 void loop() {
     static int iSatCount = 0xffff;
     static int iPrevSecond = 0xffff;
-    while (gpsPort.available()) {
-        int c = gpsPort.read();
+    while (GPS_PORT.available()) {
+        int c = GPS_PORT.read();
         bool bFix = gps.encode(c);
         if (bFix) {
             // Fix is ready.
@@ -105,15 +153,23 @@ void loop() {
                 lcd.print(INVALID);
             } else {
                 uint8_t iSecond = gps.time.second();
+                uint8_t iMinute = gps.time.minute();
+                
                 if (gps.time.second() != iPrevSecond) {
                     char szTimestamp[22];
+
+                    // My favorite aspect of this program, The Pips!
+                    if (0 < sl_config.iPipLenShort && 59 == iMinute && 54 < iSecond) {
+                        tone(BUZZER_PIN, sl_config.iPipFreq, sl_config.iPipLenShort);
+                    } else if (0 < sl_config.iPipLenLong && 0 == iMinute && 0 == iSecond) {
+                        tone(BUZZER_PIN, sl_config.iPipFreq, sl_config.iPipLenLong);
+                    }
                     sprintf(szTimestamp, "%04d-%02d-%02d %02d:%02d:%02dZ",
                             gps.date.year(), gps.date.month(), gps.date.day(), 
-                            gps.time.hour(), gps.time.minute(), iSecond);
+                            gps.time.hour(), iMinute, iSecond);
                     lcd.print(szTimestamp);
                     
-                    #if defined (STATUS_LINE)
-                    {
+                    if (sl_config.bStatus) {
                         size_t iPos = 0;
                         lcd.setCursor(0, 3);
                         iPos += lcd.print(gps.location.lat(), 3);
@@ -125,18 +181,18 @@ void loop() {
                             iPos += lcd.print(" ");
                         }
                     }
-                    #endif // STATUS_LINE
                     
                     iPrevSecond = iSecond;
+
                     #if defined (DEBUG_PORT)
-                    {
+                    if (DEBUG_PORT) {
                         DEBUG_PORT.print(gps.location.lat(), 5);
                         DEBUG_PORT.print(",");
                         DEBUG_PORT.print(gps.location.lng(), 5);
                         DEBUG_PORT.print(",");
-                        DEBUG_PORT.print(iSatCount);
+                        DEBUG_PORT.print(szTimestamp);
                         DEBUG_PORT.print(",");
-                        DEBUG_PORT.println(szTimestamp);
+                        DEBUG_PORT.println(iSatCount);
                     }
                     #endif // DEBUG_PORT
                 }
