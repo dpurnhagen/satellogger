@@ -14,24 +14,20 @@
  */
 #define PROGRAM "Satellogger"
 #define CALLSIGN "K4ILG"
-#define VERSION "0.8.3"
+#define VERSION "0.8.4"
 #define COPYRIGHT "(c) 2020 - Donald Purnhagen"
 #define INVALID "Searching...        "
 
 #include <Wire.h>                          // wires
 #include <hd44780.h>                       // hd44780
 #include <hd44780ioClass/hd44780_I2Cexp.h> // i2c backpack
-#include <TinyGPS++.h>                     // gps parser
+#include <NMEAGPS.h>                       // gps parser
 // Use software serial on the Uno which lacks harware serial when using USB.
 //#include <NeoSWSerial.h>                 // serial port for gps
 
 // For serial monitor debugging.
 // Comment out the define to disable debugging.
 #define DEBUG_PORT Serial
-
-// Status on the bottom line of the 4 row display.
-// Comment out the define to disable status line.
-#define STATUS_LINE
 
 // GPS serial port.
 //NeoSWSerial gpsPort(10, 9); // GPS TX to pin 8, GPS RX to pin 9
@@ -58,7 +54,7 @@ typedef struct sl_config_s {
 } sl_config_t;
 
 // My best attempt at a satellite logo.
-byte logo[] = {
+static byte logo[] = {
     // Char 0
     B00000, B10010, B10010, B10010, B01001, B01000, B00110, B00001,
     // Char 1
@@ -66,9 +62,9 @@ byte logo[] = {
 };
 
 // Global variables.
-TinyGPSPlus gps;
-hd44780_I2Cexp lcd(LCD_ADDRESS); // Declare lcd object at fixed i2c address.
-sl_config_t sl_config;
+static NMEAGPS gps;
+static hd44780_I2Cexp lcd(LCD_ADDRESS); // Declare lcd object at fixed i2c address.
+static sl_config_t sl_config;
 
 void setup() {
     int iStatus;
@@ -128,8 +124,6 @@ void setup() {
         DEBUG_PORT.println(F(CALLSIGN));
         DEBUG_PORT.println(F(VERSION));
         DEBUG_PORT.println(F(COPYRIGHT));
-        //DEBUG_PORT.print(F("TinyGPS++ version "));
-        //DEBUG_PORT.println(TinyGPSPlus::libraryVersion());
     }
     #endif // DEBUG_PORT
 
@@ -140,41 +134,45 @@ void setup() {
 void loop() {
     static int iSatCount = 0xffff;
     static int iPrevSecond = 0xffff;
-    while (GPS_PORT.available()) {
-        int c = GPS_PORT.read();
-        bool bFix = gps.encode(c);
-        if (bFix) {
+    while (gps.available(GPS_PORT)) {
+        gps_fix fix = gps.read();
+        if (fix.valid.location) {
             // Fix is ready.
-            if (0 < gps.satellites.value()) {
-                iSatCount = gps.satellites.value();
+            if (0 < fix.satellites) {
+                iSatCount = fix.satellites;
             }
             lcd.setCursor(0, 2);
-            if (!gps.time.isValid() || !gps.date.isValid()) {
+            if (!fix.valid.time || !fix.valid.date) {
                 lcd.print(INVALID);
             } else {
-                uint8_t iSecond = gps.time.second();
-                uint8_t iMinute = gps.time.minute();
+                uint8_t iSecond = fix.dateTime.seconds;
+                uint8_t iMinute = fix.dateTime.minutes;
                 
-                if (gps.time.second() != iPrevSecond) {
+                if (fix.dateTime.seconds != iPrevSecond) {
                     char szTimestamp[22];
 
-                    // My favorite aspect of this program, The Pips!
+                    /* 
+                     * My favorite aspect of this program, The Pips!
+                     * Inspired by "Atomic Clock" by Timo Partl.
+                     * Shameslessly stolen from the BBC.
+                     */
                     if (0 < sl_config.iPipLenShort && 59 == iMinute && 54 < iSecond) {
                         tone(BUZZER_PIN, sl_config.iPipFreq, sl_config.iPipLenShort);
                     } else if (0 < sl_config.iPipLenLong && 0 == iMinute && 0 == iSecond) {
                         tone(BUZZER_PIN, sl_config.iPipFreq, sl_config.iPipLenLong);
                     }
+                    
                     sprintf(szTimestamp, "%04d-%02d-%02d %02d:%02d:%02dZ",
-                            gps.date.year(), gps.date.month(), gps.date.day(), 
-                            gps.time.hour(), iMinute, iSecond);
+                            2000 + fix.dateTime.year, fix.dateTime.month, fix.dateTime.date, 
+                            fix.dateTime.hours, iMinute, iSecond);
                     lcd.print(szTimestamp);
                     
                     if (sl_config.bStatus) {
                         size_t iPos = 0;
                         lcd.setCursor(0, 3);
-                        iPos += lcd.print(gps.location.lat(), 3);
+                        iPos += lcd.print(fix.latitude(), 3);
                         iPos += lcd.print(" ");
-                        iPos += lcd.print(gps.location.lng(), 3);
+                        iPos += lcd.print(fix.longitude(), 3);
                         iPos += lcd.print(" ");
                         iPos += lcd.print(iSatCount);
                         while (LCD_COLS > iPos) {
@@ -186,9 +184,9 @@ void loop() {
 
                     #if defined (DEBUG_PORT)
                     if (DEBUG_PORT) {
-                        DEBUG_PORT.print(gps.location.lat(), 5);
+                        DEBUG_PORT.print(fix.latitude(), 5);
                         DEBUG_PORT.print(",");
-                        DEBUG_PORT.print(gps.location.lng(), 5);
+                        DEBUG_PORT.print(fix.longitude(), 5);
                         DEBUG_PORT.print(",");
                         DEBUG_PORT.print(szTimestamp);
                         DEBUG_PORT.print(",");
